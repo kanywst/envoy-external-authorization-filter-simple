@@ -38,7 +38,7 @@ static_resources:
                     - name: backend
                       domains: ["*"]
                       routes:
-                        # Health check endpoint (認証なし)
+                        # Health check endpoint (no authentication)
                         - match:
                             prefix: "/health"
                           direct_response:
@@ -49,7 +49,7 @@ static_resources:
                             envoy.filters.http.ext_authz:
                               "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
                               disabled: true
-                        # OPAのエンドポイント (認証なし)
+                        # OPA endpoint (no authentication)
                         - match:
                             prefix: "/v1/data"
                           route:
@@ -58,13 +58,13 @@ static_resources:
                             envoy.filters.http.ext_authz:
                               "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
                               disabled: true
-                        # 保護されたAPIエンドポイント (認証あり)
+                        # Protected API Endpoints (Authenticated)
                         - match:
                             prefix: "/api"
                           route:
                             cluster: echo-server
                             prefix_rewrite: "/"
-                        # その他のエンドポイント (認証あり)
+                        # Other Endpoints (Authenticated)
                         - match:
                             prefix: "/"
                           route:
@@ -83,7 +83,7 @@ static_resources:
                         envoy_grpc:
                           cluster_name: opa-envoy
                         timeout: 1s
-                  # Router filter (最後に配置)
+                  # Router filter (placed last)
                   - name: envoy.filters.http.router
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
