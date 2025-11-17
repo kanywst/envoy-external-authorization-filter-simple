@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo-server
+  namespace: envoy-authz-poc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: echo-server
+  template:
+    metadata:
+      labels:
+        app: echo-server
+    spec:
+      containers:
+      - name: echo-server
+        image: ealen/echo-server:latest
+        ports:
+        - containerPort: 80
+        env:
+        - name: PORT
+          value: "80"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opa
+  namespace: envoy-authz-poc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opa
+  template:
+    metadata:
+      labels:
+        app: opa
+    spec:
+      containers:
+      - name: opa
+        image: openpolicyagent/opa:latest-envoy-static
+        ports:
+        - containerPort: 8181
+        - containerPort: 9191
+        args:
+          - "run"
+          - "--server"
+          - "--config-file=/config/config.yaml"
+          - "/policies/authz.rego"
+        volumeMounts:
+        - name: opa-config
+          mountPath: /config
+        - name: opa-config
+          mountPath: /policies
+      volumes:
+      - name: opa-config
+        configMap:
+          name: opa-config
+          items:
+          - key: config.yaml
+            path: config.yaml
+          - key: authz.rego
+            path: authz.rego
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: envoy
+  namespace: envoy-authz-poc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: envoy
+  template:
+    metadata:
+      labels:
+        app: envoy
+    spec:
+      containers:
+      - name: envoy
+        image: envoyproxy/envoy:v1.28-latest
+        ports:
+        - containerPort: 8080
+        - containerPort: 9901
+        command:
+          - "envoy"
+          - "-c"
+          - "/etc/envoy/envoy.yaml"
+        volumeMounts:
+        - name: envoy-config
+          mountPath: /etc/envoy
+      volumes:
+      - name: envoy-config
+        configMap:
+          name: envoy-config

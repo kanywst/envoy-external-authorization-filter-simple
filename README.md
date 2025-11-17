@@ -13,10 +13,7 @@
     - [Envoy Configuration (`envoy/envoy.yaml`)](#envoy-configuration-envoyenvoyyaml)
     - [OPA Configuration (`opa/config.yaml`, `authz.rego`)](#opa-configuration-opaconfigyaml-authzrego)
     - [Scalability](#scalability)
-  - [Troubleshooting](#troubleshooting)
-    - [Common Issues and Debugging Methods](#common-issues-and-debugging-methods)
-    - [How to Check Logs](#how-to-check-logs)
-  - [Reference Materials](#reference-materials)
+  - [Ref](#ref)
 
 This repository provides a simple proof-of-concept (PoC) setup for implementing authentication and authorization using **OPA (Open Policy Agent)** with the **Envoy External Authorization Filter**.
 
@@ -124,50 +121,15 @@ Verify that Envoy allows/denies requests based on policies.
 This PoC can be extended in the following directions:
 
 1. **Advanced Authentication Integration**
-      * Implementation of JWT verification logic.
-      * Integration with external Identity Providers (IDPs).
+   * Implementation of JWT verification logic.
+   * Integration with external Identity Providers (IDPs).
 2. **Granular Access Control**
-      * Resource-based access control (RBAC/ABAC).
+   * Resource-based access control (RBAC/ABAC).
 3. **Operations and Monitoring**
-      * Export Prometheus metrics.
-      * Enhance authentication and authorization logging.
+   * Export Prometheus metrics.
+   * Enhance authentication and authorization logging.
 
-## Troubleshooting
-
-### Common Issues and Debugging Methods
-
-1. **Port Conflict**
-
-    ```bash
-    # Check ports in use
-    lsof -i :8080
-    lsof -i :9191
-    ```
-
-2. **Debugging OPA Policies**
-
-    ```bash
-    # Check OPA logs
-    kubectl logs -n envoy-authz-poc deployment/opa -f
-    ```
-
-3. **Verify Envoy Configuration**
-
-    ```bash
-    # Access Envoy management UI
-    curl http://localhost:9901/config_dump
-    ```
-
-### How to Check Logs
-
-```bash
-# Monitor logs for all Pods
-kubectl logs -n envoy-authz-poc -l app=envoy -f
-kubectl logs -n envoy-authz-poc -l app=opa -f
-kubectl logs -n envoy-authz-poc -l app=echo-server -f
-```
-
-## Reference Materials
+## Ref
 
 * [Envoy External Authorization Filter](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/security/ext_authz_filter)
 * [Open Policy Agent - Envoy Tutorial](https://www.openpolicyagent.org/docs/latest/envoy-tutorial-standalone-envoy/)

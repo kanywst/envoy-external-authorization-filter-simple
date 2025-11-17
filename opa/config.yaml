@@ -1,0 +1,14 @@
+plugins:
+  envoy_ext_authz_grpc:
+    addr: :9191
+    enable_reflection: true
+
+decision_logs:
+  console: true
+
+status:
+  console: true
+
+bundles:
+  authz:
+    resource: "/policies"

@@ -1,0 +1,71 @@
+@startuml
+!theme toy
+
+title Envoy + OPA Authorization PoC Architecture 🛡️
+
+skinparam backgroundcolor #f7f7ff
+skinparam defaultFontName "Arial"
+skinparam component {
+  BorderColor #4477aa
+  BackgroundColor #ddeeff
+}
+skinparam database {
+  BorderColor #66bb66
+  BackgroundColor #eeffee
+}
+
+' =========================================================
+package "Kubernetes Cluster" as KubeCluster {
+
+  actor Client as "Client Request"
+
+  ' Envoy Group
+  package "Envoy Proxy" as EnvoyGroup {
+    component EnvoyService as "Envoy Service\n:8080/HTTP"
+    component EnvoyDeployment as "Envoy Deployment"
+
+    ' Envoy Pod 
+    component EnvoyPod {
+      component Httpmgr as "HTTP Connection Manager"
+      component ExtAuthz as "ExtAuthz Filter"
+      component Router as "Router Filter"
+    }
+  }
+
+  ' OPA Group
+  package "OPA Engine" as OPAGroup {
+    component OPAService as "OPA Service\n:9191/gRPC, :8181/HTTP"
+    component OPADeployment as "OPA Deployment"
+  }
+
+  ' Echo Server Group
+  package "Echo Server" as EchoGroup {
+    database EchoService as "Echo Service\n:80/HTTP"
+    component EchoDeployment as "Echo Server Deployment"
+  }
+
+  ' Connection Flow
+  Client -> EnvoyService : HTTP Request
+  EnvoyService --> EnvoyDeployment
+  EnvoyDeployment --> Httpmgr
+
+  ' Envoy Internal Processing
+  Httpmgr -> ExtAuthz
+  ExtAuthz -> OPAService : 1. gRPC Authorization Request (9191)
+
+  ' OPA Processing
+  OPAService --> OPADeployment 
+  OPADeployment --> OPAService : (HTTP 8181)
+
+  ' Routing After Authorization
+  ExtAuthz --> Router : 2. If Authorization Granted
+
+  ' Backend Routing
+  Router --> EchoService : **Primary Routing**
+  EchoService --> EchoDeployment
+
+  ' Direct OPA Access
+  Router --> OPAService : **Data Access (/v1/data)**
+  
+}
+@enduml

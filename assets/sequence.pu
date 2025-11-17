@@ -1,0 +1,44 @@
+@startuml
+title Envoy/OPA Authorization Sequence Flow
+
+' Participant Definitions
+participant C as Client
+participant E as "Envoy Proxy (8080)"
+participant O as "OPA (9191/gRPC)"
+participant S as "Echo Server (80)"
+
+activate C
+C -> E: HTTP Request (GET /api/user, Authorization: Bearer ...)
+deactivate C
+
+activate E
+E -> E: 1. HTTP Connection Manager
+
+' Authorization Request
+E -> O: 2. ExtAuthz Filter: CheckRequest (gRPC)
+deactivate E
+
+activate O
+note over O: 3. OPA executes policy (authz.rego)
+O --> E: 4. CheckResponse (Allowed/Denied)
+deactivate O
+
+activate E
+alt If Allowed (allow == true)
+    E -> E: 5. Router Filter
+    E -> S: 6. Route to echo-server:80
+    deactivate E
+
+    activate S
+    S --> E: 7. HTTP Response (e.g., 200 OK)
+    deactivate S
+
+    activate E
+    E --> C: 8. HTTP Response
+    deactivate E
+else If Denied (allow == false)
+    E -> C: 5. HTTP 403 Forbidden\n(failure_mode_allow: false)
+    deactivate E
+end
+
+@enduml
