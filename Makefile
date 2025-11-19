@@ -1,6 +1,5 @@
-.PHONY: help k8s-deploy k8s-clean test clean
+.PHONY: help k8s-deploy k8s-clean test clean port-forward
 
-# Default target
 help:
 	@echo "Envoy External Authorization Filter Simple PoC"
 	@echo ""
@@ -17,10 +16,9 @@ k8s-deploy:
 	kubectl apply -f kubernetes/deployment.yaml
 	kubectl apply -f kubernetes/service.yaml
 	@echo "Deploy complete. Waiting for pods to be ready..."
-	kubectl wait --for=condition=ready pod -l app=opa -n envoy-authz-poc --timeout=60s
-	kubectl wait --for=condition=ready pod -l app=echo-server -n envoy-authz-poc --timeout=60s
-	kubectl wait --for=condition=ready pod -l app=envoy -n envoy-authz-poc --timeout=60s
+	kubectl wait --for=condition=ready pod -l app=envoy-ext-authz-opa -n envoy-authz-poc --timeout=60s
 	@echo "All pods are up and running."
+
 k8s-clean:
 	@echo "Deleting resources from Kubernetes..."
 	kubectl delete -f kubernetes/service.yaml --ignore-not-found=true
@@ -28,23 +26,37 @@ k8s-clean:
 	kubectl delete -f kubernetes/configmap.yaml --ignore-not-found=true
 	kubectl delete -f kubernetes/namespace.yaml --ignore-not-found=true
 
-# test
+port-forward:
+	@echo "Starting port-forward to envoy-entrypoint..."
+	kubectl port-forward -n envoy-authz-poc service/envoy-entrypoint 8080:8080
+
 test:
-	@echo "Running tests..."
-	@echo ""
-	@echo "1. Health check (no authentication):"
-	curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health || echo "Testing in Docker environment..."
-	@echo ""
-	@echo "2. API access without authentication (expecting 403):"
-	curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/test || echo "Testing in Docker environment..."
-	@echo ""
-	@echo "3. API access with valid token (expecting 200):"
-	curl -s -H "Authorization: Bearer test-token" -o /dev/null -w "%{http_code}" http://localhost:8080/api/test || echo "Testing in Docker environment..."
-	@echo ""
-	@echo "4. API access with admin token (expecting 200):"
-	curl -s -H "Authorization: Bearer admin-token" -o /dev/null -w "%{http_code}" http://localhost:8080/api/test || echo "Testing in Docker environment..."
+	@echo "Checking connection to localhost:8080..."
+	@# Check if port-forward is running
+	@curl -s http://localhost:8080/health > /dev/null || (echo "❌ Error: Cannot connect to localhost:8080. Please run 'make port-forward' in a separate terminal." && exit 1)
+	@echo "✅ Connection established. Running tests..."
+	@echo "--------------------------------------------------"
+
+	@echo "1. Health check (no authentication)"
+	@echo "   Expect: 200 OK"
+	@CODE=$$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health); \
+	if [ "$$CODE" -eq 200 ]; then echo "   Result: $$CODE [PASS]"; else echo "   Result: $$CODE [FAIL]"; fi
 	@echo ""
 
-# Cleanup
-clean: k8s-clean
-	@echo "Cleaned up all resources."
+	@echo "2. API access without authentication"
+	@echo "   Expect: 403 Forbidden"
+	@CODE=$$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/test); \
+	if [ "$$CODE" -eq 403 ]; then echo "   Result: $$CODE [PASS]"; else echo "   Result: $$CODE [FAIL]"; fi
+	@echo ""
+
+	@echo "3. API access with valid token"
+	@echo "   Expect: 200 OK"
+	@CODE=$$(curl -s -H "Authorization: Bearer test-token" -o /dev/null -w "%{http_code}" http://localhost:8080/api/test); \
+	if [ "$$CODE" -eq 200 ]; then echo "   Result: $$CODE [PASS]"; else echo "   Result: $$CODE [FAIL]"; fi
+	@echo ""
+
+	@echo "4. API access with admin token"
+	@echo "   Expect: 200 OK"
+	@CODE=$$(curl -s -H "Authorization: Bearer admin-token" -o /dev/null -w "%{http_code}" http://localhost:8080/api/test); \
+	if [ "$$CODE" -eq 200 ]; then echo "   Result: $$CODE [PASS]"; else echo "   Result: $$CODE [FAIL]"; fi
+	@echo "--------------------------------------------------"

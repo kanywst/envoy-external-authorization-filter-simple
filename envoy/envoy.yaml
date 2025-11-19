@@ -38,7 +38,6 @@ static_resources:
                     - name: backend
                       domains: ["*"]
                       routes:
-                        # Health check endpoint (no authentication)
                         - match:
                             prefix: "/health"
                           direct_response:
@@ -49,7 +48,6 @@ static_resources:
                             envoy.filters.http.ext_authz:
                               "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
                               disabled: true
-                        # OPA endpoint (no authentication)
                         - match:
                             prefix: "/v1/data"
                           route:
@@ -58,19 +56,16 @@ static_resources:
                             envoy.filters.http.ext_authz:
                               "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
                               disabled: true
-                        # Protected API Endpoints (Authenticated)
                         - match:
                             prefix: "/api"
                           route:
                             cluster: echo-server
                             prefix_rewrite: "/"
-                        # Other Endpoints (Authenticated)
                         - match:
                             prefix: "/"
                           route:
                             cluster: echo-server
                 http_filters:
-                  # External Authorization Filter
                   - name: envoy.filters.http.ext_authz
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
@@ -83,13 +78,11 @@ static_resources:
                         envoy_grpc:
                           cluster_name: opa-envoy
                         timeout: 1s
-                  # Router filter (placed last)
                   - name: envoy.filters.http.router
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
 
   clusters:
-    # Echo server cluster
     - name: echo-server
       connect_timeout: 1s
       type: STRICT_DNS
@@ -101,10 +94,9 @@ static_resources:
               - endpoint:
                   address:
                     socket_address:
-                      address: echo-server
+                      address: 127.0.0.1
                       port_value: 80
 
-    # OPA HTTP cluster
     - name: opa
       connect_timeout: 1s
       type: STRICT_DNS
@@ -116,10 +108,9 @@ static_resources:
               - endpoint:
                   address:
                     socket_address:
-                      address: opa
+                      address: 127.0.0.1
                       port_value: 8181
 
-    # OPA Envoy gRPC cluster (External Authorization)
     - name: opa-envoy
       type: STRICT_DNS
       connect_timeout: 1s
@@ -132,5 +123,5 @@ static_resources:
               - endpoint:
                   address:
                     socket_address:
-                      address: opa
+                      address: 127.0.0.1
                       port_value: 9191

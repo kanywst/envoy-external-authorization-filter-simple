@@ -5,67 +5,69 @@ title Envoy + OPA Authorization PoC Architecture 🛡️
 
 skinparam backgroundcolor #f7f7ff
 skinparam defaultFontName "Arial"
-skinparam component {
+skinparam node {
   BorderColor #4477aa
   BackgroundColor #ddeeff
 }
-skinparam database {
+skinparam component {
+  BorderColor #4477aa
+  BackgroundColor #ffffff
+}
+skinparam interface {
   BorderColor #66bb66
   BackgroundColor #eeffee
 }
 
 ' =========================================================
-package "Kubernetes Cluster" as KubeCluster {
+frame "Kubernetes Cluster" as KubeCluster {
 
-  actor Client as "Client Request"
+  actor Client as "Client\nRequest"
 
-  ' Envoy Group
-  package "Envoy Proxy" as EnvoyGroup {
-    component EnvoyService as "Envoy Service\n:8080/HTTP"
-    component EnvoyDeployment as "Envoy Deployment"
-
-    ' Envoy Pod 
-    component EnvoyPod {
-      component Httpmgr as "HTTP Connection Manager"
-      component ExtAuthz as "ExtAuthz Filter"
-      component Router as "Router Filter"
+  node "Envoy Pod" as EnvoyPodNode {
+    component "Envoy Proxy" as Envoy {
+      port "8080 (HTTP)" as P_Envoy
+      component "HTTP Connection Manager" as HCM
+      component "ExtAuthz Filter" as ExtAuthz
+      component "Router Filter" as Router
+      
+      HCM --> ExtAuthz : Internal
+      ExtAuthz --> Router : If Allowed
     }
   }
 
-  ' OPA Group
-  package "OPA Engine" as OPAGroup {
-    component OPAService as "OPA Service\n:9191/gRPC, :8181/HTTP"
-    component OPADeployment as "OPA Deployment"
+  node "OPA Pod" as OPAPodNode {
+    component "OPA Engine" as OPA {
+      port "9191 (gRPC)" as P_OPA_gRPC
+      port "8181 (HTTP)" as P_OPA_HTTP
+      file "Rego Policy" as Rego
+      
+      OPA -down-> Rego : Evaluates
+    }
   }
 
-  ' Echo Server Group
-  package "Echo Server" as EchoGroup {
-    database EchoService as "Echo Service\n:80/HTTP"
-    component EchoDeployment as "Echo Server Deployment"
+  node "Echo Server Pod" as EchoPodNode {
+    component "Echo Server" as Echo {
+      port "80 (HTTP)" as P_Echo
+    }
   }
 
-  ' Connection Flow
-  Client -> EnvoyService : HTTP Request
-  EnvoyService --> EnvoyDeployment
-  EnvoyDeployment --> Httpmgr
+  ' =========================================================
+  ' Traffic Flow
+  ' =========================================================
+  
+  ' 1. Client to Envoy
+  Client --> P_Envoy : HTTP Request
+  P_Envoy --> HCM
 
-  ' Envoy Internal Processing
-  Httpmgr -> ExtAuthz
-  ExtAuthz -> OPAService : 1. gRPC Authorization Request (9191)
+  ' 2. Authorization Flow (gRPC)
+  ExtAuthz -right-> P_OPA_gRPC : **1. CheckRequest (gRPC)**
+  P_OPA_gRPC --> OPA
 
-  ' OPA Processing
-  OPAService --> OPADeployment 
-  OPADeployment --> OPAService : (HTTP 8181)
-
-  ' Routing After Authorization
-  ExtAuthz --> Router : 2. If Authorization Granted
-
-  ' Backend Routing
-  Router --> EchoService : **Primary Routing**
-  EchoService --> EchoDeployment
-
-  ' Direct OPA Access
-  Router --> OPAService : **Data Access (/v1/data)**
+  ' 3. Upstream Routing
+  Router -down-> P_Echo : **2. Upstream (Authorized)**
+  
+  ' 4. Direct OPA Access (Optional based on your Rego)
+  Router .right.> P_OPA_HTTP : **(Optional) /v1/data**
   
 }
 @enduml

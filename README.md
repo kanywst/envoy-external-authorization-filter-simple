@@ -15,30 +15,32 @@
     - [Scalability](#scalability)
   - [Ref](#ref)
 
-This repository provides a simple proof-of-concept (PoC) setup for implementing authentication and authorization using **OPA (Open Policy Agent)** with the **Envoy External Authorization Filter**.
+This repository provides a simple proof-of-concept (PoC) setup for implementing authentication and authorization using **OPA (Open Policy Agent)** with the **Envoy External Authorization Filter** .
 
 ## Overview
 
-This PoC consists of the following main components.
+This PoC consists of the following main components:
 
-* **Envoy Proxy**: Functions as a reverse proxy and applies the **External Authorization Filter** to HTTP requests.
-* **OPA (Open Policy Agent)**: Receives authorization requests from Envoy and performs **authorization decisions** based on policies. It communicates with Envoy via gRPC.
-* **Echo Server**: A test **backend service** that is only accessed when authorization succeeds.
+- **Envoy Proxy**: Functions as a reverse proxy (Sidecar/Gateway pattern) and applies the **External Authorization Filter** to incoming HTTP requests.
+- **OPA (Open Policy Agent)**: Receives authorization requests (`CheckRequest`) from Envoy via **gRPC** and performs **authorization decisions** based on Rego policies.
+- **Echo Server**: A test **backend service** that is only accessed when authorization succeeds.
 
 ## Architecture
 
-External requests are captured by Envoy and blocked from being forwarded to the backend service until authorization is completed.
-
-![](out/assets/artifacture-diagram/artifacture-diagram.svg)
+External requests are intercepted by Envoy's **HTTP Connection Manager**. The **ExtAuthz** filter blocks forwarding to the backend service until OPA returns an `OK` status.
 
 ## Sequence
 
-![](out/assets/sequence/sequence.svg)
+The flow emphasizes the **Short-circuiting OR logic** of OPA policy evaluation.
 
-1. Client sends a request to Envoy
-2. Envoy requests an authorization decision from OPA via the External Authorization Filter
-3. OPA performs the authorization decision based on the Rego policy
-4. If authorized, Envoy forwards the request to the backend service (Echo Server)
+1. **Client Request**: Client sends a request to Envoy.
+2. **Auth Request**: Envoy pauses the request and sends metadata (headers, path, method) to OPA via gRPC (Port 9191).
+3. **Policy Evaluation**: OPA evaluates the `authz.rego` policy.
+   - **Logic**: Rules are declarative. Multiple `allow` blocks act as a logical **OR**.
+   - **Short-circuit**: If *any* rule evaluates to `true`, OPA immediately permits the request.
+4. **Decision**:
+   - **Allowed**: Envoy forwards the request to the backend (Echo Server).
+   - **Denied**: Envoy returns `HTTP 403 Forbidden` directly to the client.
 
 ## Steps
 
@@ -72,27 +74,27 @@ External requests are captured by Envoy and blocked from being forwarded to the 
 
 ### Basic Test Cases
 
-Verify that Envoy allows/denies requests based on policies.
+Verify that Envoy allows/denies requests based on the policy rules (Public paths, Token validation, Method checks).
 
 | No. | Command | Authentication State | Expected Result |
 | :--- | :--- | :--- | :--- |
-| 1 | `curl -i http://localhost:8080/health` | No Authentication (Envoy Bypass) | `HTTP 200 OK` |
+| 1 | `curl -i http://localhost:8080/health` | No Authentication (Public Path) | `HTTP 200 OK` |
 | 2 | `curl -i http://localhost:8080/api/test` | No Authentication (Protected Resource) | `HTTP 403 Forbidden` |
-| 3 | `curl -i -H “Authorization: Bearer test-token” http://localhost:8080/api/test` | Valid token | `HTTP 200 OK` |
+| 3 | `curl -i -H “Authorization: Bearer test-token” http://localhost:8080/api/test` | Valid token (`test-token`) | `HTTP 200 OK` |
 | 4 | `curl -i -H “Authorization: Bearer admin-token” http://localhost:8080/api/test` | Administrator token | `HTTP 200 OK` |
 | 5 | `curl -i -H “Authorization: Bearer invalid-token” http://localhost:8080/api/test` | Invalid token | `HTTP 403 Forbidden` |
 
 ### Detailed Testing
 
-* **Verifying Response Headers (On Success)**
+- **Verifying Response Headers (On Success)**
 
     ```bash
     curl -v -H “Authorization: Bearer test-token” http://localhost:8080/api/test
     ```
 
-* **Verify OPA Policy (Debug)**
+- **Verify OPA Policy (Debug)**
 
-    Access OPA's HTTP API (`/v1/data`) via Envoy to inspect policy data.
+    Access OPA's HTTP API (`/v1/data`) via Envoy (configured as a public path) to inspect the current policy state or evaluation results.
 
     ```bash
     curl -s http://localhost:8080/v1/data/envoy/authz/debug_info
@@ -102,34 +104,38 @@ Verify that Envoy allows/denies requests based on policies.
 
 ### Envoy Configuration (`envoy/envoy.yaml`)
 
-* **Listener Ports**: `8080` (HTTP), `9901` (Management UI)
-* **ExtAuthz Integration**: Connects to OPA's gRPC endpoint (`opa-envoy` cluster, Port `9191`).
-* **Routing**:
-  * Paths `/health` and `/v1/data` have the ExtAuthz filter **disabled** (no authentication required).
-  * All other paths have the ExtAuthz filter applied and are routed to `echo-server`.
+- **Listener Ports**: `8080` (Traffic), `9901` (Admin Interface).
+- **ExtAuthz Integration**: Configured to communicate with the `opa-envoy` cluster on Port `9191` (gRPC).
+- **Routing Strategy**:
+  - **Per-Route Config**: `/health` and `/v1/data` are explicitly configured to **disable** the ExtAuthz filter (bypass OPA).
+  - **Default**: All other routes enforce the ExtAuthz filter.
 
 ### OPA Configuration (`opa/config.yaml`, `authz.rego`)
 
-* **Service Ports**: gRPC server (`9191`), HTTP API (`8181`)
-* **Authorization Policy (`authz.rego`)**:
-  * Allow access for `Bearer test-token` or `Bearer admin-token`.
-  * Allow access if the HTTP method is **`GET`** and the user is authenticated.
-  * `/health` and `/v1/data` are also permitted by the policy.
+- **Interfaces**: gRPC (`9191`) for Envoy checks, HTTP (`8181`) for management/data.
+- **Policy Logic (`authz.rego`)**:
+  - **Declarative Model**: The policy defines multiple `allow` rules.
+  - **Structure**:
+    - Rule 1: Allow if `Bearer admin-token` is present.
+    - Rule 2: Allow if `Bearer test-token` is present.
+    - Rule 3: Allow if path is in `public_paths`.
+    - Rule 4: Allow if method is `GET` AND user is authenticated.
+      - **Evaluation**: These rules function as a logical **OR**. If any single rule matches, the request is allowed.
 
 ### Scalability
 
 This PoC can be extended in the following directions:
 
 1. **Advanced Authentication Integration**
-   * Implementation of JWT verification logic.
-   * Integration with external Identity Providers (IDPs).
+   - Implementation of real JWT verification (replacing the hardcoded string check).
+   - Integration with OIDC Providers (Keycloak, Auth0, etc.).
 2. **Granular Access Control**
-   * Resource-based access control (RBAC/ABAC).
+   - Implementing RBAC (Role-Based Access Control) based on token claims.
 3. **Operations and Monitoring**
-   * Export Prometheus metrics.
-   * Enhance authentication and authorization logging.
+   - Export OPA decision logs to an external system.
+   - Prometheus metrics for authorization latency and decision counts.
 
 ## Ref
 
-* [Envoy External Authorization Filter](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/security/ext_authz_filter)
-* [Open Policy Agent - Envoy Tutorial](https://www.openpolicyagent.org/docs/latest/envoy-tutorial-standalone-envoy/)
+- [Envoy External Authorization Filter](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/security/ext_authz_filter)
+- [Open Policy Agent - Envoy Tutorial](https://www.openpolicyagent.org/docs/latest/envoy-tutorial-standalone-envoy/)
