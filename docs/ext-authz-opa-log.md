@@ -16,7 +16,7 @@
     - [Envoy](#envoy)
     - [Open Policy Agent](#open-policy-agent)
 
-**Envoy Proxy** が **Open Policy Agent (OPA)** を利用して外部認可を実行し、バックエンドサービスにリクエストをプロキシする一連の処理を、詳細なログと設定に基づいて解析します。
+**Envoy Proxy** が **Open Policy Agent (OPA)** を利用して外部認可を実行し、バックエンドサービスにリクエストをプロキシする一連の処理についてまとめています。
 
 ## Overview
 
