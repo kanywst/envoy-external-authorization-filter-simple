@@ -2,11 +2,16 @@
 
 - [Envoy: OPA example](#envoy-opa-example)
   - [Overview](#overview)
-  - [🔬 フェーズごとの詳細解析 (Logs \& Action)](#-フェーズごとの詳細解析-logs--action)
+  - [Logs \& Action](#logs--action)
     - [1. クライアントからのリクエスト受信 (Ingress)](#1-クライアントからのリクエスト受信-ingress)
     - [2. 外部認可 (Ext AuthZ) の実行](#2-外部認可-ext-authz-の実行)
     - [3. バックエンドサービスへのプロキシ](#3-バックエンドサービスへのプロキシ)
     - [4. クライアントへの最終レスポンス (Egress)](#4-クライアントへの最終レスポンス-egress)
+  - [Appendix](#appendix)
+    - [Connection IDとは？](#connection-idとは)
+    - [「元の Connection ID」について](#元の-connection-idについて)
+    - [Stream ID (ストリームID) と Connection ID の関係](#stream-id-ストリームid-と-connection-id-の関係)
+      - [具体的な関係性の図](#具体的な関係性の図)
   - [Logs](#logs)
     - [Envoy](#envoy)
     - [Open Policy Agent](#open-policy-agent)
@@ -54,7 +59,7 @@ sequenceDiagram
     C--x E: TCP Connection 0 close (約1秒後)
 ```
 
-## 🔬 フェーズごとの詳細解析 (Logs & Action)
+## Logs & Action
 
 ### 1. クライアントからのリクエスト受信 (Ingress)
 
@@ -98,6 +103,58 @@ Envoyはバックエンドからのレスポンスをクライアントに転送
 | **16:02:27.521** | Envoy | StreamId: 14364... | `encoding headers via codec: ':status', '200'` | クライアントへ `HTTP 200 OK` を転送開始。 |
 | **16:02:27.522** | Envoy | - | アクセスログ: `200 - 0 1641 39 23` | **合計処理時間 39ms**。レスポンスサイズ 1641バイト。 |
 | **16:02:28.530** | Envoy | **ConnId: 0** | `remote close` | クライアントとのTCP接続を終了。 |
+
+## Appendix
+
+### Connection IDとは？
+
+**Connection ID (ConnId)** は、**Envoy** が管理している **TCP (Transmission Control Protocol) 接続**、すなわちネットワークソケットを一意に識別するためのIDです。
+
+これは、クライアントとEnvoyの間、またはEnvoyとバックエンドサービスの間で確立された**永続的な通信チャネル**の識別子です。
+
+* **物理層に近いレベル:** ConnId は、OSレベルで確立されるソケット接続に対応します。
+* **用途:** データが流れるパイプラインそのものを指します。
+  * `ConnId: 0` はクライアント（ダウンストリーム）とのTCP接続。
+  * `ConnId: 1` は OPA（アップストリーム）とのTCP接続。
+  * `ConnId: 2` は Echo Server（アップストリーム）とのTCP接続。
+
+### 「元の Connection ID」について
+
+元の Connection IDとは、ログにおける **`ConnId: 0`** のことです。
+
+| ID | 役割 | プロトコル |
+| :---: | :--- | :--- |
+| **`ConnId: 0`** | **元の（ダウンストリーム）接続** | TCP/HTTP (Client <-> Envoy) |
+| **`ConnId: 1`** | 新しい（アップストリーム）接続 | TCP/gRPC (Envoy <-> OPA) |
+| **`ConnId: 2`** | 新しい（アップストリーム）接続 | TCP/HTTP (Envoy <-> Echo Server) |
+
+Envoyは、クライアントからのリクエストを受信する **`ConnId: 0`** を、認可チェックやバックエンド通信の最中も維持し、最終的なレスポンスをクライアントに返すために**再利用**します。
+
+### Stream ID (ストリームID) と Connection ID の関係
+
+**Stream ID** は、**HTTP/1.1 (キープアライブ)** や **HTTP/2** といったアプリケーション層のプロトコルで使用される概念で、**単一のTCP接続 (Connection ID)** の上で流れる **論理的なリクエストとレスポンスのペア** を識別します。
+
+| 特徴 | Connection ID | Stream ID |
+| :--- | :--- | :--- |
+| **対応プロトコル** | TCP | HTTP/1.1 (再利用時) または HTTP/2 |
+| **役割** | 物理的な**通信経路**（パイプライン）の識別。 | 経路（ConnId）上を流れる**個々のデータトランザクション**の識別。 |
+| **ライフサイクル** | クライアントが切断するまで**永続的**。 | リクエストとレスポンスが完了すると**終了**。 |
+| **ログの例** | `ConnId: 0` | `StreamId: 14364395182449484694` |
+
+#### 具体的な関係性の図
+
+1. **クライアントリクエスト**
+   * **`ConnId: 0`** 上で **`StreamId: 14364...`** が開始されました。
+   * このストリームは、Envoyがクライアントからの `GET /api/test` を処理している間、**一貫して保持**されます。
+
+2. **OPAへの認可チェック**
+   * Envoyは、認可チェックのために **新しいTCP接続 (`ConnId: 1`)** を確立しました。
+   * この新しい接続の上で、認可チェック用の **新しい論理ストリーム (`StreamId: 32127...`)** が開始され、gRPC通信に使用されました。
+   * つまり、**一つのクライアントリクエスト** (Stream 14364...) の処理中に、**別のアップストリームリクエスト** (Stream 32127...) が発生したということです。
+3.  **Echo Serverへのプロキシ**
+    * 同様に、Envoyは **新しいTCP接続 (`ConnId: 2`)** を確立し、その上でバックエンドへのプロキシリクエスト（論理ストリーム）を送信しました。
+
+まとめると、**一つの Connection ID** は、**複数の Stream ID** を同時にまたは連続して処理するための基盤（パイプ）として機能します。しかし、Envoyが別のサービス（OPAやEcho Server）と通信する際は、それぞれ新しい Connection ID を確立するのが一般的な動作です。
 
 ## Logs
 
