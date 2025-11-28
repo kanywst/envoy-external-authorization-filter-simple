@@ -2,155 +2,102 @@
 
 - [Envoy: OPA example](#envoy-opa-example)
   - [Overview](#overview)
-    - [1. クライアントからの初期リクエスト (Ingress)](#1-クライアントからの初期リクエスト-ingress)
+  - [🔬 フェーズごとの詳細解析 (Logs \& Action)](#-フェーズごとの詳細解析-logs--action)
+    - [1. クライアントからのリクエスト受信 (Ingress)](#1-クライアントからのリクエスト受信-ingress)
     - [2. 外部認可 (Ext AuthZ) の実行](#2-外部認可-ext-authz-の実行)
-      - [2.1. OPAへの `CheckRequest`](#21-opaへの-checkrequest)
-      - [2.2. OPAによるポリシー評価](#22-opaによるポリシー評価)
-      - [2.3. OPAからの認可レスポンス](#23-opaからの認可レスポンス)
-    - [3. バックエンドサービスへのルーティング](#3-バックエンドサービスへのルーティング)
+    - [3. バックエンドサービスへのプロキシ](#3-バックエンドサービスへのプロキシ)
     - [4. クライアントへの最終レスポンス (Egress)](#4-クライアントへの最終レスポンス-egress)
   - [Logs](#logs)
     - [Envoy](#envoy)
     - [Open Policy Agent](#open-policy-agent)
 
+**Envoy Proxy** が **Open Policy Agent (OPA)** を利用して外部認可を実行し、バックエンドサービスにリクエストをプロキシする一連の処理を、詳細なログと設定に基づいて解析します。
+
+## Overview
+
 ```bash
 $ curl -i -H "Authorization: Bearer test-token" http://localhost:8080/api/test
 ```
 
-## Overview
+
+リクエストの流れは以下の4つのフェーズに分かれ、Envoyが複数の独立した **TCP接続 (ConnId)** と **HTTPストリーム (StreamId)** を管理していることが確認できます。
 
 ```mermaid
 sequenceDiagram
     participant C as Client (curl)
-    participant E as Envoy Proxy
-    participant O as OPA (Ext AuthZ)
-    participant S as Echo Server (Backend)
+    participant E as Envoy Proxy (8080)
+    participant O as OPA (9191 ExtAuthZ)
+    participant S as Echo Server (80)
 
-    Note over E: ⏳ Time is 16:02:27.481
-    C->>E: TCP Connection (ConnId: 0)
+    Note over C,E: **ダウンストリーム接続** (ConnId: 0)
+    C->>E: GET /api/test (StreamId: 14364...)
     activate E
-    E->>E: New Stream (StreamId: 14364395182449484694)
-    C->>E: GET /api/test (Headers)
-    Note over E: Ext AuthZ Filter initiates check.
-    %% OPA CheckRequest
-    Note over E: ⏳ 16:02:27.484
-    E->>E: AuthZ Check Stream (StreamId: 321275418739896990)
-    E->>O: New TCP Connection (ConnId: 1)
+    
+    %% OPA CheckRequest (別接続/別ストリーム)
+    Note over E: 1. 認可チェック開始 (別 ConnId: 1)
+    E->>O: gRPC CheckRequest (ConnId: 1, StreamId: 32127...)
     activate O
-    E->>O: gRPC CheckRequest (Method: Authorization/Check)
-    Note over O: OPA Query: data.envoy.authz.allow<br>Decision ID: 55665fb1-...<br>Total Decision Time: 2.47ms
-    Note over E,O: **Authorization in Progress**
     O-->>E: CheckResponse (gRPC Status: 0 / Success)
     deactivate O
-    Note over E: Check Successful (decision=true).
-    %% Echo Server Request
-    Note over E: ⏳ 16:02:27.497
-    E->>S: New TCP Connection (ConnId: 2)
+    Note over E: 2. 認可完了。**元の ConnId: 0 上の Stream を続行**。
+    
+    %% Echo Server Request (別接続)
+    E->>S: GET /test (ConnId: 2)
     activate S
-    E->>S: GET //test (Cluster: echo-server)
-    Note over E: Original Path: /api/test
     S-->>E: HTTP 200 OK (Content-Length: 1641)
     deactivate S
-    Note over E: Upstream Service Time: 23ms
-    %% Final Response
-    Note over E: ⏳ 16:02:27.521
-    E-->>C: HTTP 200 OK (Content-Type: application/json)
+    
+    %% Final Response (ConnId: 0 を使用)
+    Note over E: 3. バックエンド応答を ConnId: 0 で転送
+    E-->>C: HTTP 200 OK
     deactivate E
-    Note over C,E: Connection 0 closed 16:02:28.530
+    C--x E: TCP Connection 0 close (約1秒後)
 ```
 
-このログは、**Envoy Proxy** が **外部認可サービス (External Authorization Service)** として **Open Policy Agent (OPA)** を利用し、その背後にあるバックエンドサービスにリクエストをプロキシする一連の流れを示している
+## 🔬 フェーズごとの詳細解析 (Logs & Action)
 
-### 1. クライアントからの初期リクエスト (Ingress)
+### 1. クライアントからのリクエスト受信 (Ingress)
 
-クライアント（`curl`）がEnvoyに対してリクエストを送信します。Envoyはこれを新しい接続とストリームとして受け付けます。
+クライアント（`curl/8.7.1`）からのリクエストを Envory のリスナー (8080) が受信し、TCP接続（ダウンストリーム）とHTTPストリームを確立します。
 
-* **リクエスト:** `GET http://localhost:8080/api/test`
-* **Envoyログ:**
-  * `[2025-11-28 16:02:27.481]... new connection from 127.0.0.1:48524`：クライアント（ソースアドレス `127.0.0.1:48524`）からの新しいTCP接続確立。
-  * `[2025-11-28 16:02:27.482]... new stream`：HTTPコネクションマネージャがストリームを確立（`StreamId: 14364395182449484694`）。
-  * `[2025-11-28 16:02:27.483]... request headers complete... ':path', '/api/test' ... 'authorization', 'Bearer test-token'`：リクエストヘッダーの解析完了。
-
-| ログタイム (UTC) | エンティティ | ログ内容と解説 | シーケンス対応 |
-| -- | -- | -- | -- |
-| 16:02:27.481|Envoy|new connection from 127.0.0.1:48524 (ConnId: 0)|Client -> Envoy: TCP接続確立|
-| 16:02:27.482|Envoy|new stream (StreamId: 14364395182449484694)|Envoy内部: HTTPストリーム開始|
-| 16:02:27.483|Envoy|request headers complete ... /api/test|Client -> Envoy: GETリクエスト送信|
+| 時刻 | エンティティ | 接続/ストリームID | ログ/アクション | 詳細 |
+| :--- | :--- | :--- | :--- | :--- |
+| **16:02:27.481** | Envoy | **ConnId: 0** | `new connection from 127.0.0.1:48524` | クライアントとの新しいTCP接続確立。 |
+| **16:02:27.482** | Envoy | **StreamId: 14364...** | `new stream` | HTTPコネクションマネージャがストリーム開始。 |
+| **16:02:27.483** | Envoy | - | `request headers complete` | `GET /api/test` と `Authorization: Bearer test-token` ヘッダーを解析。 |
 
 ### 2. 外部認可 (Ext AuthZ) の実行
 
-EnvoyのHTTPフィルタチェーンで **Ext AuthZ フィルタ** が動作し、リクエストをバックエンドにルーティングする前に認可チェックを行います。
+HTTPフィルタチェーンの **`envoy.filters.http.ext_authz`** が動作し、リクエストを **OPA (opa-envoy)** に gRPC で送信して認可を求めます。
 
-#### 2.1. OPAへの `CheckRequest`
+| 時刻 | エンティティ | 接続/ストリームID | ログ/アクション | 詳細 |
+| :--- | :--- | :--- | :--- | :--- |
+| **16:02:27.484** | Envoy | **StreamId: 32127...** | `cluster 'opa-envoy' match for URL '...Check'` | Ext AuthZが gRPC CheckRequest のルーティングを決定。 |
+| **16:02:27.485** | Envoy | **ConnId: 1** | `creating a new connection` | OPA (127.0.0.1:9191) への新しいTCP接続 (アップストリーム) を確立。 |
+| **16:02:27.487** | Envoy | ConnId: 1 | `encode complete` | OPAへ gRPC `CheckRequest` を送信。 |
+| **16:02:27.495** | OPA | **Decision ID:** `55665fb1-...` | `query:"data.envoy.authz.allow" "result":true` | OPAがポリシーを評価し、`Bearer test-token` に基づき **認可成功** を決定。 |
+| **16:02:27.497** | Envoy | **ConnId: 1** | `response complete ... 'grpc-status', '0'` | OPAからの `CheckResponse` を受信。gRPCステータス `0` は成功。 |
 
-Envoyは、認可情報を外部の **OPA** サービス（クラスター名 `opa-envoy`）に送信します。これは **gRPC** を使用した `Authorization/Check` リクエストとして実行されます。
+### 3. バックエンドサービスへのプロキシ
 
-* **Envoyログ:**
-  * `[2025-11-28 16:02:27.484]... cluster 'opa-envoy' match for URL '/envoy.service.auth.v3.Authorization/Check'`：Ext AuthZのロジックが起動し、`opa-envoy` クラスターへのルーティングを決定。
-  * `[2025-11-28 16:02:27.485]... router decoding headers: ... ':path', '/envoy.service.auth.v3.Authorization/Check' ... 'content-type', 'application/grpc'`：これが gRPC の認可リクエストであることを示します。
-  * このリクエストは、Envoyが **OPA**（`127.0.0.1:9191`）への新しい接続 (`ConnectionId: 1`) を確立して送信されます。
+認可が成功したため、Envoyはリクエストを `echo-server` クラスターに転送します。ルーティング設定に基づき、パスの書き換えが行われます。
 
-#### 2.2. OPAによるポリシー評価
-
-OPAはこの `CheckRequest` のボディに含まれる情報（リクエストヘッダー、パスなど）を **Input** として受け取り、設定されたポリシー（Regoコード）を評価します。
-
-* **OPAログ:**
-  * `[2025-11-28T16:02:27Z]... "msg":"Executing policy query.","query":"data.envoy.authz.allow"`：Envoy Ext AuthZのデフォルトのクエリパス (`data.envoy.authz.allow`) でポリシー評価を開始。
-  * `"input":[[{"type":"string","value":"request"},{"type":"object","value":[[{"type":"string","value":"http"},{"type":"object","value":[[{"type":"string","value":"headers"},{"type":"object","value":[[{"type":"string","value":"authorization"},{"type":"string","value":"Bearer test-token"}]]}]]}]]}]]`：OPAの入力データには、元のリクエストの詳細がJSON形式で含まれていることがわかります。
-
-|ログタイム (UTC)|エンティティ|ログ内容と解説|シーケンス対応|
-|-|-|-|-|
-| 16:02:27.484|Envoy|cluster 'opa-envoy' match for URL '/.../Authorization/Check' (StreamId: 32127...90)|Envoy内部: OPAへの認可ストリーム開始|
-| 16:02:27.485|Envoy|trying to create new connection (ConnId: 1)|Envoy -> OPA: 新しいTCP接続を試行|
-| 16:02:27.486|Envoy|ConnId: 1 connected to 127.0.0.1:9191|Envoy -> OPA: gRPC接続確立|
-| 16:02:27.487|Envoy|ConnId: 1 encode complete|Envoy -> OPA: gRPC CheckRequest 送信|
-| 16:02:27.495|OPA|"""query"":""data.envoy.authz.allow""| ""result"":true"|OPA内部: ポリシー評価、認可成功|
-| 16:02:27.496|Envoy|"StreamId: 32127...90 upstream headers complete: ':status'| '200'"|OPA -> Envoy: gRPCレスポンス受信開始|
-| 16:02:27.497|Envoy|"ConnId: 1 response complete ... 'grpc-status'| '0'"|OPA -> Envoy: gRPCレスポンス完了（成功）|
-
-#### 2.3. OPAからの認可レスポンス
-
-OPAはポリシー評価の結果を `CheckResponse` としてEnvoyに返します。
-
-* **OPAログ:**
-  * `[2025-11-28T16:02:27Z]... "decision":true, ... "msg":"Returning policy decision."`：ポリシー評価の結果、**認可は成功** (許可) となりました。
-* **Envoyログ:**
-  * `[2025-11-28 16:02:27.497]... response complete ... 'grpc-status', '0'`：gRPCステータスコード `0` は成功を示します。
-
-### 3. バックエンドサービスへのルーティング
-
-認可が成功したため、Envoyは元のリクエストを最終的なバックエンドサービス（ログでは `echo-server`）に転送します。
-
-* **Envoyログ:**
-  * `[2025-11-28 16:02:27.497]... cluster 'echo-server' match for URL '/api/test'`：元のパス (`/api/test`) に基づいてバックエンドクラスター `echo-server` へのルーティングを決定。
-  * `[2025-11-28 16:02:27.497]... router decoding headers: ... ':path', '//test' ... 'x-envoy-original-path', '/api/test'`：バックエンドへのリクエストヘッダーがエンコードされます。パスが変更されているのは、Envoyの設定によるパスの書き換え（Rewrite）が適用されている可能性があるためです。
-  * Envoyはバックエンド（`127.0.0.1:80`）への新しい接続 (`ConnectionId: 2`) を確立してリクエストを送信します。
-
-| ログタイム (UTC)|エンティティ|ログ内容と解説|シーケンス対応|
-| -|-|-|-|
-| 16:02:27.497|Envoy|cluster 'echo-server' match for URL '/api/test' (StreamId: 14364...94)|Envoy内部: バックエンドへのルーティング決定|
-| 16:02:27.497|Envoy|creating a new connection (ConnId: 2)|Envoy -> Backend: 新しいTCP接続を試行|
-| 16:02:27.498|Envoy|ConnId: 2 connected to 127.0.0.1:80|Envoy -> Backend: 接続確立|
-| 16:02:27.498|Envoy|ConnId: 2 encode complete|Envoy -> Backend: GETリクエスト送信|
+| 時刻 | エンティティ | 接続/ストリームID | ログ/アクション | 詳細 |
+| :--- | :--- | :--- | :--- | :--- |
+| **16:02:27.497** | Envoy | **StreamId: 14364...** | `cluster 'echo-server' match for URL '/api/test'` | ルーティングが `echo-server` クラスターに決定。 |
+| **16:02:27.497** | Envoy | **ConnId: 2** | `creating a new connection... to 127.0.0.1:80` | Echo Serverへの新しいTCP接続 (アップストリーム) を確立。 |
+| **16:02:27.497** | Envoy | StreamId: 14364... | `router decoding headers: ... ':path', '//test'` | 設定 (`prefix_rewrite: "/"`) に従い、パスを `/api/test` から `/test` に書き換えて送信。 |
+| **16:02:27.521** | Envoy | StreamId: 14364... | `upstream headers complete: ':status', '200'` | Echo Serverからレスポンスを受信。**アップストリームサービス時間: 23ms**。 |
 
 ### 4. クライアントへの最終レスポンス (Egress)
 
-バックエンドサービスがリクエストを処理し、Envoy経由でクライアントにレスポンスを返します。
+Envoyはバックエンドからのレスポンスをクライアントに転送し、処理を終了します。
 
-* **Envoyログ:**
-  * `[2025-11-28 16:02:27.521]... upstream headers complete: end_stream=false ... ':status', '200'`：バックエンドサービスからのレスポンス（`HTTP 200 OK`）を受信。
-  * `[2025-11-28 16:02:27.521]... encoding headers via codec (end_stream=false): ':status', '200' ... 'content-length', '1641'`：Envoyがクライアントに向けてレスポンスヘッダーをエンコード。
-  * `[2025-11-28T16:02:27.482Z] "GET /api/test HTTP/1.1" 200 - 0 1641 39 23 ...`：アクセスログ。`200` は成功、`39` はダウンストリーム（クライアント）へのレスポンス時間（ミリ秒）、`23` はアップストリーム（バックエンド）へのレスポンス時間（ミリ秒）を示します。
-
-この一連の流れから、このシステムが **APIゲートウェイ** や **サービスメッシュ** の一部として機能し、リクエストがバックエンドに到達する前に **Envoy** によって **OPA** を用いた集中型の認証・認可ポリシーが適用されていることが明確にわかります。
-
-| ログタイム (UTC)|エンティティ|ログ内容と解説|シーケンス対応|
-| -|-|-|-|
-| 16:02:27.521|Envoy|"StreamId: 14364...94 upstream headers complete: ':status'| '200'"|Backend -> Envoy: HTTP 200 受信|
-| 16:02:27.521|Envoy|"StreamId: 14364...94 encoding headers via codec: ':status'| '200'"|Envoy -> Client: HTTP 200 転送開始|
-| 16:02:27.522|Envoy|"GET /api/test HTTP/1.1"" 200 ... 39 23"|アクセスログ出力。合計時間 39ms、バックエンド処理時間 23ms。|
-| 16:02:28.530|Envoy|ConnId: 0 remote close|Client/Envoy: TCP接続終了|
-
+| 時刻 | エンティティ | 接続/ストリームID | ログ/アクション | 詳細 |
+| :--- | :--- | :--- | :--- | :--- |
+| **16:02:27.521** | Envoy | StreamId: 14364... | `encoding headers via codec: ':status', '200'` | クライアントへ `HTTP 200 OK` を転送開始。 |
+| **16:02:27.522** | Envoy | - | アクセスログ: `200 - 0 1641 39 23` | **合計処理時間 39ms**。レスポンスサイズ 1641バイト。 |
+| **16:02:28.530** | Envoy | **ConnId: 0** | `remote close` | クライアントとのTCP接続を終了。 |
 
 ## Logs
 

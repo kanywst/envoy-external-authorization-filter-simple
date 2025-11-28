@@ -36,24 +36,39 @@ External requests are intercepted by Envoy's **HTTP Connection Manager**. The **
 ```mermaid
 sequenceDiagram
     participant C as Client (curl)
-    participant E as Envoy Proxy
-    participant O as OPA (Ext AuthZ)
-    participant S as Echo Server (Backend)
+    participant E as Envoy Proxy (8080)
+    participant O as OPA (9191 ExtAuthZ)
+    participant S as Echo Server (80)
 
+    Note over C,E: ConnId: 0 (Client to Envoy: 8080)
     C->>E: GET /api/test (Authorization: Bearer test-token)
     activate E
-    Note over E: New stream (StreamId: 14364395182449484694)
-    E->>O: CheckRequest (ext_authz)
+    Note over E: 1. HTTP CM: Ext AuthZ Filter invoked (Global setting)
+    
+    %% OPA CheckRequest
+    E->>E: Check Stream (StreamId: 32127...90)
+    E->>O: New gRPC Connection (ConnId: 1 to opa-envoy:9191)
     activate O
-    Note over O: policy query (data.envoy.authz.allow)
-    O-->>E: CheckResponse (Result: decision=true)
+    E->>O: gRPC CheckRequest (Authorization/Check)
+    Note over O: OPA Policy (authz.rego) Evaluation:<br>Condition: token == "Bearer test-token" is **True**
+    O-->>E: CheckResponse (gRPC Status: 0)
     deactivate O
-    E->>S: GET //test (Cluster: echo-server)
+    Note over E: 2. Routing Filter: Path /api matches.
+    
+    %% Echo Server Request
+    E->>S: New HTTP Connection (ConnId: 2 to echo-server:80)
     activate S
+    Note over E,S: **Rewrite:** /api/test -> /test
+    E->>S: GET /test
+    
     S-->>E: HTTP 200 OK (Content-Length: 1641)
     deactivate S
+    Note over E: Upstream Service Time: 23ms
+    
+    %% Final Response
     E-->>C: HTTP 200 OK
     deactivate E
+    C--x E: TCP Connection 0 close
 ```
 
 ## Steps
