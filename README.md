@@ -5,7 +5,9 @@
   - [Architecture](#architecture)
   - [Sequence](#sequence)
   - [Steps](#steps)
+    - [Create Kind Cluster](#create-kind-cluster)
     - [Deploy \& Run](#deploy--run)
+    - [Clean up kind cluster](#clean-up-kind-cluster)
   - [Functionality Testing](#functionality-testing)
     - [Basic Test Cases](#basic-test-cases)
     - [Detailed Testing](#detailed-testing)
@@ -31,25 +33,43 @@ External requests are intercepted by Envoy's **HTTP Connection Manager**. The **
 
 ## Sequence
 
-The flow emphasizes the **Short-circuiting OR logic** of OPA policy evaluation.
+```mermaid
+sequenceDiagram
+    participant C as Client (curl)
+    participant E as Envoy Proxy
+    participant O as OPA (Ext AuthZ)
+    participant S as Echo Server (Backend)
 
-1. **Client Request**: Client sends a request to Envoy.
-2. **Auth Request**: Envoy pauses the request and sends metadata (headers, path, method) to OPA via gRPC (Port 9191).
-3. **Policy Evaluation**: OPA evaluates the `authz.rego` policy.
-   - **Logic**: Rules are declarative. Multiple `allow` blocks act as a logical **OR**.
-   - **Short-circuit**: If *any* rule evaluates to `true`, OPA immediately permits the request.
-4. **Decision**:
-   - **Allowed**: Envoy forwards the request to the backend (Echo Server).
-   - **Denied**: Envoy returns `HTTP 403 Forbidden` directly to the client.
+    C->>E: GET /api/test (Authorization: Bearer test-token)
+    activate E
+    Note over E: New stream (StreamId: 14364395182449484694)
+    E->>O: CheckRequest (ext_authz)
+    activate O
+    Note over O: policy query (data.envoy.authz.allow)
+    O-->>E: CheckResponse (Result: decision=true)
+    deactivate O
+    E->>S: GET //test (Cluster: echo-server)
+    activate S
+    S-->>E: HTTP 200 OK (Content-Length: 1641)
+    deactivate S
+    E-->>C: HTTP 200 OK
+    deactivate E
+```
 
 ## Steps
+
+### Create Kind Cluster
+
+```bash
+kind create cluster
+```
 
 ### Deploy & Run
 
 1. **Deploy**
 
     ```bash
-    make k8s-deploy
+    make deploy
     ```
 
 2. **Access via Port Forwarding**
@@ -70,6 +90,12 @@ The flow emphasizes the **Short-circuiting OR logic** of OPA policy evaluation.
     make k8s-clean
     ```
 
+### Clean up kind cluster
+
+```bash
+kind delete clusters --all
+```
+
 ## Functionality Testing
 
 ### Basic Test Cases
@@ -80,16 +106,16 @@ Verify that Envoy allows/denies requests based on the policy rules (Public paths
 | :--- | :--- | :--- | :--- |
 | 1 | `curl -i http://localhost:8080/health` | No Authentication (Public Path) | `HTTP 200 OK` |
 | 2 | `curl -i http://localhost:8080/api/test` | No Authentication (Protected Resource) | `HTTP 403 Forbidden` |
-| 3 | `curl -i -H “Authorization: Bearer test-token” http://localhost:8080/api/test` | Valid token (`test-token`) | `HTTP 200 OK` |
-| 4 | `curl -i -H “Authorization: Bearer admin-token” http://localhost:8080/api/test` | Administrator token | `HTTP 200 OK` |
-| 5 | `curl -i -H “Authorization: Bearer invalid-token” http://localhost:8080/api/test` | Invalid token | `HTTP 403 Forbidden` |
+| 3 | `curl -i -H "Authorization: Bearer test-token" http://localhost:8080/api/test` | Valid token (`test-token`) | `HTTP 200 OK` |
+| 4 | `curl -i -H "Authorization: Bearer admin-token" http://localhost:8080/api/test` | Administrator token | `HTTP 200 OK` |
+| 5 | `curl -i -H "Authorization: Bearer invalid-token" http://localhost:8080/api/test` | Invalid token | `HTTP 403 Forbidden` |
 
 ### Detailed Testing
 
 - **Verifying Response Headers (On Success)**
 
     ```bash
-    curl -v -H “Authorization: Bearer test-token” http://localhost:8080/api/test
+    curl -v -H "Authorization: Bearer test-token" http://localhost:8080/api/test
     ```
 
 - **Verify OPA Policy (Debug)**

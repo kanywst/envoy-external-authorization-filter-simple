@@ -1,15 +1,15 @@
-.PHONY: help k8s-deploy k8s-clean test clean port-forward
+.PHONY: help deploy k8s-clean test clean port-forward
 
 help:
 	@echo "Envoy External Authorization Filter Simple PoC"
 	@echo ""
 	@echo "Available targets:"
-	@echo "  k8s-deploy   - Deploy to Kubernetes"
+	@echo "  deploy   - Deploy to Kubernetes"
 	@echo "  k8s-clean    - Delete resources from Kubernetes"
 	@echo "  test         - Run tests"
 	@echo "  clean        - Clean up all resources"
 
-k8s-deploy:
+deploy:
 	@echo "Deploying to Kubernetes..."
 	kubectl apply -f kubernetes/namespace.yaml
 	kubectl apply -f kubernetes/configmap.yaml

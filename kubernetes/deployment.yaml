@@ -32,6 +32,7 @@ spec:
           - "--server"
           - "--config-file=/config/config.yaml"
           - "/policies/authz.rego"
+          - "--log-level=debug"
         volumeMounts:
         - name: opa-config
           mountPath: /config
@@ -47,6 +48,8 @@ spec:
           - "envoy"
           - "-c"
           - "/etc/envoy/envoy.yaml"
+          - "-l"
+          - "debug"
         volumeMounts:
         - name: envoy-config
           mountPath: /etc/envoy
